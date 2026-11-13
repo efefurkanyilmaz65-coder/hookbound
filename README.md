@@ -12,7 +12,7 @@ The game only requires a web browser. No download, sign-up, or installation need
 
 ## Board
 
-(Board link will be added)
+ https://github.com/users/efefurkanyilmaz65-coder/projects/2
 
 ## How to Run
 
