@@ -1,3 +1,4 @@
+
 // ===== Setup =====
 const canvas = document.getElementById("game");
 const ctx = canvas.getContext("2d");
@@ -9,19 +10,71 @@ const GROUND_Y = 120; // where the underground starts
 // The point the hook hangs from
 const HOOK_ORIGIN = { x: WIDTH / 2, y: 95 };
 
+// ===== Objects =====
+// weight: higher = pulled up more slowly
+const OBJECT_TYPES = {
+  smallGold:  { kind: "gold",    radius: 14, weight: 1.2, value: 50 },
+  mediumGold: { kind: "gold",    radius: 22, weight: 2.2, value: 150 },
+  bigGold:    { kind: "gold",    radius: 34, weight: 4.5, value: 400 },
+  smallRock:  { kind: "rock",    radius: 16, weight: 2.5, value: 15 },
+  bigRock:    { kind: "rock",    radius: 32, weight: 6,   value: 40 },
+  diamond:    { kind: "diamond", radius: 10, weight: 1,   value: 500 },
+};
+
+// How many of each object to place
+const SPAWN_PLAN = {
+  smallGold: 5,
+  mediumGold: 3,
+  bigGold: 2,
+  smallRock: 4,
+  bigRock: 3,
+  diamond: 1,
+};
+
+
+let objects = [];
+
+// Find a random spot that doesn't overlap other objects
+function createObject(type) {
+  const t = OBJECT_TYPES[type];
+  for (let tries = 0; tries < 100; tries++) {
+    const x = 40 + t.radius + Math.random() * (WIDTH - 80 - t.radius * 2);
+    const y = GROUND_Y + 80 + t.radius + Math.random() * (HEIGHT - GROUND_Y - 100 - t.radius * 2);
+    const overlaps = objects.some(
+      (o) => Math.hypot(o.x - x, o.y - y) < o.radius + t.radius + 10
+    );
+    if (!overlaps) {
+      return { type, ...t, x, y, seed: Math.random() * 10 };
+    }
+  }
+  return null; // no free spot found
+}
+
+function spawnObjects() {
+  objects = [];
+  for (const type in SPAWN_PLAN) {
+    for (let i = 0; i < SPAWN_PLAN[type]; i++) {
+      const obj = createObject(type);
+      if (obj) objects.push(obj);
+    }
+  }
+}
+
 // ===== Hook =====
 const hook = {
   angle: 0,          // 0 = straight down, positive = right, negative = left
   direction: 1,      // 1 = swinging right, -1 = swinging left
+
   length: 30,        // current rope length in pixels
   state: "swinging", // "swinging" | "shooting" | "returning"
+  caught: null,      // the object the hook is holding
 };
 
 const SWING_SPEED = 1.5;  // radians per second
 const MAX_ANGLE = 1.2;    // about 70 degrees to each side
 const MIN_LENGTH = 30;    // rope length while swinging
 const SHOOT_SPEED = 450;  // pixels per second going down
-const RETURN_SPEED = 550; // pixels per second coming back
+const RETURN_SPEED = 550; // pixels per second coming back (empty hook)
 
 // Position of the hook's tip, based on its angle and rope length
 function getHookTip() {
@@ -30,7 +83,6 @@ function getHookTip() {
     y: HOOK_ORIGIN.y + Math.cos(hook.angle) * hook.length,
   };
 }
-
 
 function fireHook() {
   if (hook.state === "swinging") {
@@ -45,6 +97,7 @@ function updateHook(dt) {
       hook.angle = MAX_ANGLE;
       hook.direction = -1;
     }
+
     if (hook.angle < -MAX_ANGLE) {
       hook.angle = -MAX_ANGLE;
       hook.direction = 1;
@@ -52,18 +105,44 @@ function updateHook(dt) {
   } else if (hook.state === "shooting") {
     hook.length += SHOOT_SPEED * dt;
     const tip = getHookTip();
-    // Hit the edge of the screen -> come back
+
+    // Hit the edge of the screen -> come back empty
     if (tip.x < 0 || tip.x > WIDTH || tip.y > HEIGHT) {
       hook.state = "returning";
+      return;
+    }
+
+    // Touched an object -> grab it
+    for (const obj of objects) {
+      if (Math.hypot(obj.x - tip.x, obj.y - tip.y) < obj.radius + 6) {
+        hook.caught = obj;
+        hook.state = "returning";
+        break;
+      }
     }
   } else if (hook.state === "returning") {
-    hook.length -= RETURN_SPEED * dt;
+    // Heavier objects come back more slowly
+    const speed = hook.caught ? RETURN_SPEED / hook.caught.weight : RETURN_SPEED;
+    hook.length -= speed * dt;
+
+    // The caught object moves together with the hook
+    if (hook.caught) {
+      const tip = getHookTip();
+      hook.caught.x = tip.x + Math.sin(hook.angle) * hook.caught.radius * 0.7;
+      hook.caught.y = tip.y + Math.cos(hook.angle) * hook.caught.radius * 0.7;
+
+    }
+
+    // Back at the top
     if (hook.length <= MIN_LENGTH) {
       hook.length = MIN_LENGTH;
+      if (hook.caught) {
+        objects = objects.filter((o) => o !== hook.caught); // collected
+        hook.caught = null;
+      }
       hook.state = "swinging";
     }
   }
-
 }
 
 // ===== Input =====
@@ -85,6 +164,7 @@ function drawSky() {
   ctx.fillRect(0, 0, WIDTH, GROUND_Y);
 }
 
+
 function drawUnderground() {
   const gradient = ctx.createLinearGradient(0, GROUND_Y, 0, HEIGHT);
   gradient.addColorStop(0, "#8b5a2b");
@@ -96,7 +176,6 @@ function drawUnderground() {
   ctx.fillStyle = "#5a8f29";
   ctx.fillRect(0, GROUND_Y - 6, WIDTH, 8);
 }
-
 
 function drawWinch() {
   const x = HOOK_ORIGIN.x;
@@ -118,17 +197,76 @@ function drawWinch() {
   ctx.stroke();
 }
 
+
+// Draws a bumpy, rock-like outline
+function traceBlob(x, y, r, seed) {
+  ctx.beginPath();
+  const points = 10;
+  for (let i = 0; i < points; i++) {
+    const a = (i / points) * Math.PI * 2;
+    const wobble = 0.85 + 0.15 * Math.sin(seed + i * 2.7);
+    const px = x + Math.cos(a) * r * wobble;
+    const py = y + Math.sin(a) * r * wobble;
+    if (i === 0) ctx.moveTo(px, py);
+    else ctx.lineTo(px, py);
+  }
+  ctx.closePath();
+}
+
+function drawObject(obj) {
+  const { x, y, radius: r } = obj;
+
+  if (obj.kind === "gold") {
+    const g = ctx.createRadialGradient(x - r * 0.3, y - r * 0.3, r * 0.1, x, y, r);
+    g.addColorStop(0, "#fff3a0");
+    g.addColorStop(0.5, "#ffd700");
+    g.addColorStop(1, "#b8860b");
+    ctx.fillStyle = g;
+    traceBlob(x, y, r, obj.seed);
+    ctx.fill();
+    ctx.strokeStyle = "#8b6508";
+    ctx.lineWidth = 2;
+    ctx.stroke();
+  } else if (obj.kind === "rock") {
+    const g = ctx.createRadialGradient(x - r * 0.3, y - r * 0.3, r * 0.1, x, y, r);
+
+    g.addColorStop(0, "#b0b0b0");
+    g.addColorStop(1, "#555555");
+    ctx.fillStyle = g;
+    traceBlob(x, y, r, obj.seed);
+    ctx.fill();
+    ctx.strokeStyle = "#3d3d3d";
+    ctx.lineWidth = 2;
+    ctx.stroke();
+  } else if (obj.kind === "diamond") {
+    const g = ctx.createLinearGradient(x - r, y - r, x + r, y + r);
+    g.addColorStop(0, "#e0ffff");
+    g.addColorStop(1, "#00bcd4");
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.moveTo(x, y - r * 1.3);
+    ctx.lineTo(x + r, y);
+    ctx.lineTo(x, y + r * 1.3);
+    ctx.lineTo(x - r, y);
+    ctx.closePath();
+    ctx.fill();
+    ctx.strokeStyle = "#ffffff";
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+  }
+}
+
 function drawHook() {
   const tip = getHookTip();
 
   // Rope
   ctx.strokeStyle = "#3a3a3a";
   ctx.lineWidth = 2;
+
   ctx.beginPath();
   ctx.moveTo(HOOK_ORIGIN.x, HOOK_ORIGIN.y);
   ctx.lineTo(tip.x, tip.y);
   ctx.stroke();
-
 
   // Claw (rotated to match the rope direction)
   ctx.save();
@@ -157,12 +295,12 @@ function drawHook() {
 
 function drawMiner() {
   const x = HOOK_ORIGIN.x + 75; // miner stands right of the winch
+
   const feet = GROUND_Y - 6;
 
   // Legs
   ctx.fillStyle = "#2f4f8f";
   ctx.fillRect(x - 9, feet - 22, 7, 22);
-
   ctx.fillRect(x + 2, feet - 22, 7, 22);
 
   // Body
@@ -190,15 +328,16 @@ function drawMiner() {
   // Headlamp
   ctx.fillStyle = "#fff6a0";
   ctx.beginPath();
+
   ctx.arc(x, feet - 73, 4, 0, Math.PI * 2);
   ctx.fill();
 }
 
 function draw() {
-
   ctx.clearRect(0, 0, WIDTH, HEIGHT);
   drawSky();
   drawUnderground();
+  for (const obj of objects) drawObject(obj);
   drawWinch();
   drawHook();
   drawMiner();
@@ -217,4 +356,5 @@ function gameLoop(now) {
   requestAnimationFrame(gameLoop);
 }
 
+spawnObjects();
 requestAnimationFrame(gameLoop);
