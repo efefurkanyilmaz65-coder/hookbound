@@ -37,6 +37,61 @@ let objects = [];
 // ===== Score =====
 let score = 0;
 let popups = []; // floating "+50" texts
+
+// ===== Level =====
+const LEVEL_TIME = 60; // seconds per level
+let level = 1;
+let timeLeft = LEVEL_TIME;
+let gameState = "playing"; // "playing" | "levelComplete" | "gameOver"
+let messageTimer = 0;      // how long the "Level Complete" message stays
+
+// Total money needed to pass each level (grows every level)
+function getTarget(lvl) {
+    return 650 + (lvl - 1) * 850 + (lvl - 1) * (lvl - 2) * 75;
+}
+
+function startLevel() {
+    timeLeft = LEVEL_TIME;
+    hook.angle = 0;
+    hook.length = MIN_LENGTH;
+    hook.state = "swinging";
+    hook.caught = null;
+    spawnObjects();
+    gameState = "playing";
+}
+
+function endLevel() {
+    if (score >= getTarget(level)) {
+        gameState = "levelComplete";
+        messageTimer = 2.5;
+    } else {
+        gameState = "gameOver";
+    }
+}
+
+function restartGame() {
+    score = 0;
+    level = 1;
+    popups = [];
+    startLevel();
+}
+
+function updateLevel(dt) {
+    if (gameState === "playing") {
+        timeLeft -= dt;
+        // Time is up, or everything has been collected
+        if (timeLeft <= 0 || (objects.length === 0 && hook.state === "swinging")) {
+            timeLeft = Math.max(timeLeft, 0);
+            endLevel();
+        }
+    } else if (gameState === "levelComplete") {
+        messageTimer -= dt;
+        if (messageTimer <= 0) {
+            level++;
+            startLevel();
+        }
+    }
+}
 // Find a random spot that doesn't overlap other objects
 function createObject(type) {
     const t = OBJECT_TYPES[type];
@@ -88,11 +143,14 @@ function getHookTip() {
 }
 
 function fireHook() {
-    if (hook.state === "swinging") {
+    if (gameState === "gameOver") {
+        restartGame(); // Space/click on the Game Over screen starts a new game
+        return;
+    }
+    if (gameState === "playing" && hook.state === "swinging") {
         hook.state = "shooting";
     }
 }
-
 function updateHook(dt) {
     if (hook.state === "swinging") {
         hook.angle += hook.direction * SWING_SPEED * dt;
@@ -366,13 +424,54 @@ function drawPopups() {
 }
 
 function drawScore() {
+    // Left panel: money and target
     ctx.fillStyle = "rgba(0, 0, 0, 0.35)";
-    ctx.fillRect(12, 12, 170, 40);
-    ctx.font = "bold 24px sans-serif";
+    ctx.fillRect(12, 12, 200, 64);
     ctx.textAlign = "left";
     ctx.textBaseline = "middle";
+    ctx.font = "bold 24px sans-serif";
     ctx.fillStyle = "#ffd700";
     ctx.fillText("$ " + score, 24, 32);
+    ctx.font = "16px sans-serif";
+    ctx.fillStyle = "#ffffff";
+    ctx.fillText("Target: $" + getTarget(level), 24, 60);
+
+    // Right panel: time and level
+    ctx.fillStyle = "rgba(0, 0, 0, 0.35)";
+    ctx.fillRect(WIDTH - 162, 12, 150, 64);
+    ctx.textAlign = "right";
+    ctx.font = "bold 24px sans-serif";
+    ctx.fillStyle = timeLeft <= 10 ? "#ff5252" : "#ffffff"; // red in the last 10 seconds
+    ctx.fillText("Time: " + Math.ceil(timeLeft), WIDTH - 24, 32);
+    ctx.font = "16px sans-serif";
+    ctx.fillStyle = "#ffffff";
+    ctx.fillText("Level " + level, WIDTH - 24, 60);
+}
+
+function drawOverlay() {
+    if (gameState === "playing") return;
+
+    ctx.fillStyle = "rgba(0, 0, 0, 0.6)";
+    ctx.fillRect(0, 0, WIDTH, HEIGHT);
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+
+    if (gameState === "levelComplete") {
+        ctx.fillStyle = "#ffd700";
+        ctx.font = "bold 48px sans-serif";
+        ctx.fillText("Level " + level + " Complete!", WIDTH / 2, HEIGHT / 2 - 30);
+        ctx.fillStyle = "#ffffff";
+        ctx.font = "22px sans-serif";
+        ctx.fillText("Next target: $" + getTarget(level + 1), WIDTH / 2, HEIGHT / 2 + 25);
+    } else if (gameState === "gameOver") {
+        ctx.fillStyle = "#ff5252";
+        ctx.font = "bold 56px sans-serif";
+        ctx.fillText("Game Over", WIDTH / 2, HEIGHT / 2 - 40);
+        ctx.fillStyle = "#ffffff";
+        ctx.font = "22px sans-serif";
+        ctx.fillText("You reached level " + level + " with $" + score, WIDTH / 2, HEIGHT / 2 + 15);
+        ctx.fillText("Press Space or click to play again", WIDTH / 2, HEIGHT / 2 + 55);
+    }
 }
 function draw() {
     ctx.clearRect(0, 0, WIDTH, HEIGHT);
@@ -384,6 +483,7 @@ function draw() {
     drawMiner();
     drawPopups();
     drawScore();
+    drawOverlay();
 }
 
 // ===== Game loop =====
@@ -394,11 +494,12 @@ function gameLoop(now) {
     const dt = Math.min((now - lastTime) / 1000, 0.05);
     lastTime = now;
 
-    updateHook(dt);
+    updateLevel(dt);
+    if (gameState === "playing") updateHook(dt);
     updatePopups(dt);
     draw();
     requestAnimationFrame(gameLoop);
 }
 
-spawnObjects();
+startLevel();
 requestAnimationFrame(gameLoop);
